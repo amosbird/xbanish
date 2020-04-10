@@ -38,9 +38,10 @@
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/XInput.h>
 #include <X11/extensions/XInput2.h>
+#include <X11/extensions/XTest.h>
 
 void hide_cursor(void);
-void show_cursor(void);
+Bool show_cursor(void);
 void snoop_root(void);
 int snoop_xinput(Window);
 void snoop_legacy(Window);
@@ -71,6 +72,46 @@ enum move_types {
 	MOVE_SW,
 	MOVE_SE,
 };
+
+typedef struct {
+	XDevice dev;
+	int axes[2];
+	int scroll;
+} cursor;
+
+// cursor control data
+cursor cur = {
+	{ -1, 0, 0 }, // -1 must be replaced by actual master pointer XDevice ID
+	{ 700, 520 },
+	0
+};
+
+void MouseClick(int button);
+void MouseClick(int button) {
+	// Create and setting up the event
+	XEvent event;
+	memset(&event, 0, sizeof(event));
+	event.xbutton.button = button;
+	event.xbutton.same_screen = True;
+	event.xbutton.subwindow = DefaultRootWindow(dpy);
+	while (event.xbutton.subwindow) {
+		event.xbutton.window = event.xbutton.subwindow;
+		XQueryPointer(dpy, event.xbutton.window, &event.xbutton.root, &event.xbutton.subwindow,
+				&event.xbutton.x_root, &event.xbutton.y_root, &event.xbutton.x, &event.xbutton.y,
+				&event.xbutton.state);
+	}
+	// Press
+	/* event.type = ButtonPress; */
+	/* if (XSendEvent(dpy, PointerWindow, True, ButtonPressMask, &event) == 0) */
+	/* 	fprintf(stderr, "Error to send the event!\n"); */
+	/* XFlush(dpy); */
+	/* usleep(1); */
+	cur.axes[0] = event.xbutton.x;
+	cur.axes[1] = event.xbutton.y;
+	XTestFakeDeviceButtonEvent(dpy, &cur.dev, Button1, True, cur.axes, 2, CurrentTime);
+	XFlush(dpy);
+}
+
 
 int
 main(int argc, char *argv[])
@@ -140,6 +181,8 @@ main(int argc, char *argv[])
 	if (always_hide)
 		hide_cursor();
 
+	button_press_type = ButtonPress;
+	button_release_type = ButtonRelease;
 	for (;;) {
 		cookie = &e.xcookie;
 		XNextEvent(dpy, &e);
@@ -283,26 +326,33 @@ hide_cursor(void)
 			}
 		}
 
+		XGrabButton(dpy, Button1, AnyModifier, DefaultRootWindow(dpy), True, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None);
+		XGrabButton(dpy, Button2, AnyModifier, DefaultRootWindow(dpy), True, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None);
+		XGrabButton(dpy, Button3, AnyModifier, DefaultRootWindow(dpy), True, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None);
 		XFixesHideCursor(dpy, DefaultRootWindow(dpy));
 		hiding = 1;
 	}
 }
 
-void
+Bool
 show_cursor(void)
 {
 	DPRINTF(("mouse moved, %sunhiding cursor\n",
 	    (hiding ? "" : "already ")));
 
 	if (!hiding)
-		return;
+		return False;
 
 	if (move && move_x != -1 && move_y != -1)
 		XWarpPointer(dpy, None, DefaultRootWindow(dpy), 0, 0, 0, 0,
 		    move_x, move_y);
 
+	XUngrabButton(dpy, Button1, AnyModifier, DefaultRootWindow(dpy));
+	XUngrabButton(dpy, Button2, AnyModifier, DefaultRootWindow(dpy));
+	XUngrabButton(dpy, Button3, AnyModifier, DefaultRootWindow(dpy));
 	XFixesShowCursor(dpy, DefaultRootWindow(dpy));
 	hiding = 0;
+	return True;
 }
 
 void
@@ -361,6 +411,7 @@ snoop_xinput(Window win)
 	devinfo = XListInputDevices(dpy, &numdevs);
 	XEventClass event_list[numdevs * 2];
 	for (i = 0; i < numdevs; i++) {
+		DPRINTF(("%s %d\n", devinfo[i].name, devinfo[i].use));
 		if (devinfo[i].use != IsXExtensionKeyboard &&
 		    devinfo[i].use != IsXExtensionPointer)
 			continue;
@@ -368,8 +419,13 @@ snoop_xinput(Window win)
 		if (!(device = XOpenDevice(dpy, devinfo[i].id)))
 			break;
 
+		if (strcmp(devinfo[i].name, "TPPS/2 IBM TrackPoint") == 0)
+			cur.dev = *device;
+
 		for (ici = device->classes, j = 0; j < devinfo[i].num_classes;
 		ici++, j++) {
+
+			DPRINTF(("hhhhhhhhhhhhhhhhhhhh %d\n", ici->input_class));
 			switch (ici->input_class) {
 			case KeyClass:
 				DPRINTF(("attaching to keyboard device %s "
